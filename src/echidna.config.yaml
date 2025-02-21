@@ -1,0 +1,10 @@
+seqLen: 100          # Number of calls in each test sequence
+maxDepth: 500        # Total number of test sequences to execute
+coverage: true       # Enable coverage tracking
+corpusDir: "corpus"  # Directory for saving coverage data
+workers: 4           # Number of parallel threads (adjust based on your machine's CPU)
+testLimit:  100000     # Maximum number of test cases to generate
+testMode: assertion
+cryticArgs:
+ - --solc-remaps
+ - ds-test/=lib/forge-std/lib/ds-test/src/ forge-std/=lib/forge-std/src/ solmate/=lib/solmate/ @openzeppelin/=lib/openzeppelin-contracts/
