@@ -332,7 +332,7 @@ contract StakeBake is ReentrancyGuard, Pausable {
         }
     }
 
-    function _processEarlyUnlock(address account, uint256 poolId, Stake storage stake) private {
+    function _processEarlyUnlock(address account, uint256 /*poolId*/, Stake storage stake) private {
         emit StakeUnlockedPrematurely(account, stake.tokenAmount, stake.lockingPeriodInBlocks, block.number);
     }
 

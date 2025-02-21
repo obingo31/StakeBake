@@ -6,9 +6,9 @@ import "forge-std/Test.sol";
 import "forge-std/console.sol";
 
 // Contracts
-import {Invariants} from "./Invariants.t.sol";
+import {Invariants} from "./StakeBakeInvariants.t.sol";
 import {Setup} from "./Setup.t.sol";
-import {StakeBakePlusEnhanced} from "src/StakeBake.sol";
+import {StakeBake} from "src/StakeBake.sol";
 
 /*
  * Test suite that converts from "fuzz tests" to foundry "unit tests"
