@@ -156,6 +156,11 @@ contract BaseHandler {
         _approve(token, owner, spender, amount);
     }
 
+     /*´:°•.°+.*•´.*:˚.°*.˚•´.°:°•.°•.*•´.*:˚.°*.˚•´.°:°•.°+.*•´.*:*/
+    /*                            Setters                           */
+    /*.•°:°.´+˚.*°.˚:*.´•*.+°.•°:´*.´•*.•°.•°:°.´:•˚°.*°.˚:*.´+°.•*/
+
+
     // Helper functions for setting state (testing purposes)
     function _setTotalRewardFund(uint256 amount) internal {
         stakeBake._setTotalRewardFund(amount);
