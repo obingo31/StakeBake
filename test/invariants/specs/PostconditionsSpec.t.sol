@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.19;
 
-/// @title PostconditionsSpec
+/// @title StakeBakePostconditionsSpec
 /// @notice Postconditions specification for the StakeBake protocol
-/// @dev Contains pseudo code and description for the postcondition properties in the protocol
-abstract contract PostconditionsSpec {
+/// @dev Contains pseudo code and description for the postcondition properties in StakeBake
+abstract contract StakeBakePostconditionsSpec {
     /*/////////////////////////////////////////////////////////////////////////////////////////////
     //                                      PROPERTY TYPES                                       //
     ///////////////////////////////////////////////////////////////////////////////////////////////
@@ -15,11 +15,11 @@ abstract contract PostconditionsSpec {
 
     ///   - There are two types of POSTCONDITIONS:
 
-    ///     - GLOBAL POSTCONDITIONS (GPOST):
+    ///     - GLOBAL POSTCONDITIONS (GPOST): 
     ///       - Properties that should always hold true after any action is executed.
-    ///       - Checked in the `_checkPostConditions` function within the HookAggregator contract.
+    ///       - Checked in the `_checkPostConditions` function within the StakeBakeHookAggregator contract.
 
-    ///     - HANDLER-SPECIFIC POSTCONDITIONS (HSPOST):
+    ///     - HANDLER-SPECIFIC POSTCONDITIONS (HSPOST): 
     ///       - Properties that should hold true after a specific action is executed in a specific context.
     ///       - Implemented within each handler function, under the HANDLER-SPECIFIC POSTCONDITIONS section.
 
@@ -29,82 +29,63 @@ abstract contract PostconditionsSpec {
     //                                          BASE                                             //
     ///////////////////////////////////////////////////////////////////////////////////////////////
 
-    /// @notice Reward updates only occur on specific actions
-    string constant BASE_GPOST_A = "BASE_GPOST_A: rewardPerToken updates only on lockTokens, unlockTokens, claimRewards, compoundRewards, release";
-
-    /// @notice Total reward fund only increases (e.g., via penalties)
-    string constant BASE_GPOST_B = "BASE_GPOST_B: totalRewardFund after >= totalRewardFund before after any action";
-
-    /// @notice Pool count only increases (via createPool)
-    string constant BASE_GPOST_C = "BASE_GPOST_C: poolCount after >= poolCount before after any action";
-
-    /// @notice Actions requiring active stakes or solvency checks
-    string constant BASE_GPOST_D = "BASE_GPOST_D: unlockTokens, adjustLockingPeriod should revert if user has no active stake";
+    string constant BASE_GPOST_A = "BASE_GPOST_A: pool.updatedAt changes only on lockTokens, reward claims, or pool management functions";
+    string constant BASE_GPOST_B = "BASE_GPOST_B: pool.totalStaked > 0 and updatedAt changed => rewardPerTokenStored increased";
+    string constant BASE_GPOST_C = "BASE_GPOST_C: totalRewardFund decreases only on successful reward claims or granted token releases";
+    string constant BASE_GPOST_D = "BASE_GPOST_D: No staking operations succeed when isEmergencyStopped == true";
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
-    //                                       STAKE MANAGEMENT                                    //
+    //                                       STAKING POOLS                                       //
     ///////////////////////////////////////////////////////////////////////////////////////////////
 
-    /// @notice lockTokens increases totalStaked
-    string constant STAKE_HSPOST_A = "STAKE_HSPOST_A: after lockTokens, pool.totalStaked increases by amount staked";
-
-    /// @notice unlockTokens decreases totalStaked
-    string constant STAKE_HSPOST_B = "STAKE_HSPOST_B: after unlockTokens, pool.totalStaked decreases by staked amount (minus penalty if applicable)";
-
-    /// @notice adjustLockingPeriod updates stake period
-    string constant STAKE_HSPOST_C = "STAKE_HSPOST_C: after adjustLockingPeriod, userStakes.lockingPeriodInBlocks updates to new value";
-
-    /// @notice lockTokens creates a new stake
-    string constant STAKE_HSPOST_D = "STAKE_HSPOST_D: after lockTokens, userStakes[user][poolId].tokenAmount > 0 and !claimed";
-
-    /// @notice unlockTokens marks stake as claimed
-    string constant STAKE_HSPOST_E = "STAKE_HSPOST_E: after unlockTokens, userStakes[user][poolId].claimed == true";
-
-    /// @notice createPool increases poolCount
-    string constant STAKE_HSPOST_F = "STAKE_HSPOST_F: after createPool, poolCount increases by 1";
-
-    /// @notice activateBooster updates booster state
-    string constant STAKE_HSPOST_G = "STAKE_HSPOST_G: after activateBooster, poolBoosters[poolId].multiplier and endBlock are set correctly";
+    string constant POOL_HSPOST_A = "POOL_HSPOST_A: createPool() increases poolCount by 1";
+    string constant POOL_HSPOST_B = "POOL_HSPOST_B: createPool() sets pool.active to true";
+    string constant POOL_GPOST_C = "POOL_GPOST_C: pool.totalStaked increases only on successful lockTokens calls";
+    string constant POOL_HSPOST_D = "POOL_HSPOST_D: executeCreatePool() with enough signatures creates a new pool";
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
-    //                                       REWARD DISTRIBUTION                                 //
+    //                                          STAKING                                          //
     ///////////////////////////////////////////////////////////////////////////////////////////////
 
-    /// @notice claimRewards resets continuous rewards
-    string constant REWARD_HSPOST_A = "REWARD_HSPOST_A: after claimRewards, continuousRewards[user] == 0 for claimed pools";
-
-    /// @notice compoundRewards increases stake amount
-    string constant REWARD_HSPOST_B = "REWARD_HSPOST_B: after compoundRewards, userStakes[user][poolId].tokenAmount increases by compounded amount";
-
-    /// @notice claimRewards increases granted tokens
-    string constant REWARD_HSPOST_C = "REWARD_HSPOST_C: after claimRewards with locked rewards, grantedTokens[user] increases";
-
-    /// @notice rewardPerToken updates on state-changing actions
-    string constant REWARD_GPOST_D = "REWARD_GPOST_D: after lockTokens, unlockTokens, claimRewards, compoundRewards, pool.rewardPerTokenStored updates";
-
-    /// @notice totalRewardFund increases with penalties
-    string constant REWARD_HSPOST_E = "REWARD_HSPOST_E: after unlockTokens with early withdrawal, totalRewardFund increases by penalty amount";
+    string constant STAKING_HSPOST_A = "STAKING_HSPOST_A: after lockTokens, pool.totalStaked increases by token weight";
+    string constant STAKING_HSPOST_B = "STAKING_HSPOST_B: after lockTokens, userStakedTokenIds[user].length increases by 1";
+    string constant STAKING_HSPOST_C = "STAKING_HSPOST_C: after lockTokens, userRewardPoints increases by expectedStakingRewardPoints";
+    string constant STAKING_GPOST_D = "STAKING_GPOST_D: lockTokens transfers NFT from user to contract";
+    string constant STAKING_HSPOST_E = "STAKING_HSPOST_E: lockTokens with booster active increases reward points by booster multiplier";
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
-    //                                       VESTING                                             //
+    //                                          REWARDS                                          //
     ///////////////////////////////////////////////////////////////////////////////////////////////
 
-    /// @notice release increases released tokens
-    string constant VESTING_HSPOST_A = "VESTING_HSPOST_A: after release, releasedTokens[user] increases by releasable amount";
-
-    /// @notice release does not exceed granted tokens
-    string constant VESTING_GPOST_B = "VESTING_GPOST_B: after release, releasedTokens[user] <= grantedTokens[user]";
-
-    /// @notice release reduces contract reward token balance
-    string constant VESTING_HSPOST_C = "VESTING_HSPOST_C: after release, rewardToken.balanceOf(address(this)) decreases by released amount";
+    string constant REWARDS_HSPOST_A = "REWARDS_HSPOST_A: after reward claim, continuousRewards[user] decreases by claimed amount";
+    string constant REWARDS_HSPOST_B = "REWARDS_HSPOST_B: after reward claim, rewardToken.balanceOf(user) increases by claimed amount";
+    string constant REWARDS_GPOST_C = "REWARDS_GPOST_C: totalRewardFund never increases except via addRewardFund";
+    string constant REWARDS_HSPOST_D = "REWARDS_HSPOST_D: addRewardFund increases totalRewardFund by amount";
+    string constant REWARDS_HSPOST_E = "REWARDS_HSPOST_E: claim cannot reduce userRewardPoints below 0";
 
     ///////////////////////////////////////////////////////////////////////////////////////////////
-    //                                       SECURITY                                            //
+    //                                        GOVERNANCE                                         //
     ///////////////////////////////////////////////////////////////////////////////////////////////
 
-    /// @notice Emergency stop prevents staking actions
-    string constant SECURITY_GPOST_A = "SECURITY_GPOST_A: if emergencyStopped, lockTokens and compoundRewards should revert";
+    string constant GOVERNANCE_HSPOST_A = "GOVERNANCE_HSPOST_A: emergencyStop toggles isEmergencyStopped state";
+    string constant GOVERNANCE_HSPOST_B = "GOVERNANCE_HSPOST_B: submitSignature adds signature to multiSig.signatures";
+    string constant GOVERNANCE_GPOST_C = "GOVERNANCE_GPOST_C: executeCreatePool clears signatures after success";
+    string constant GOVERNANCE_HSPOST_D = "GOVERNANCE_HSPOST_D: grantTokens increases grantedTokens[user] by amount";
 
-    /// @notice Only owner or multisig can trigger emergency stop
-    string constant SECURITY_HSPOST_B = "SECURITY_HSPOST_B: after setting emergencyStopped, caller must be owner or multisig";
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    //                                        VESTING                                            //
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+
+    string constant VESTING_HSPOST_A = "VESTING_HSPOST_A: createVestingSchedule sets totalAmount correctly";
+    string constant VESTING_HSPOST_B = "VESTING_HSPOST_B: releaseGrantedTokens decreases grantedTokens by amount";
+    string constant VESTING_GPOST_C = "VESTING_GPOST_C: releasedTokens[user] never exceeds grantedTokens[user]";
+    string constant VESTING_HSPOST_D = "VESTING_HSPOST_D: releaseGrantedTokens transfers reward tokens to user";
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    //                                      IN PROGRESS                                          //
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+
+    string constant STAKING_HSPOST_F = "STAKING_HSPOST_F: unlock prematurely applies earlyWithdrawalPenalty";
+    string constant STAKING_HSPOST_G = "STAKING_HSPOST_G: unlock after lock period distributes full reward points";
+    string constant REWARDS_HSPOST_F = "REWARDS_HSPOST_F: booster activation increases reward points for new stakes";
 }

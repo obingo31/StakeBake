@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.6.2 <0.9.0;
 
-import {PropertiesAsserts} from "./PropertiesAsserts.sol";
+// Libraries
+import {StakeBakePropertiesAsserts} from "./StakeBakePropertiesAsserts.sol"; // Adapted below
 import {stdMath} from "forge-std/StdMath.sol";
 
-/// @notice Standardized assertions for use in Invariant tests, inherits PropertiesAsserts
-/// @dev Adapted from forge to work with echidna & medusa
-abstract contract StdAsserts is PropertiesAsserts {
+/// @notice Standardized assertions for use in StakeBake Invariant tests, inherits StakeBakePropertiesAsserts
+/// @dev Adapted from forge to work with echidna & medusa, with StakeBake-specific helpers
+abstract contract StakeBakeStdAsserts is StakeBakePropertiesAsserts {
     event log(string);
     event logs(bytes);
 
@@ -350,7 +351,12 @@ abstract contract StdAsserts is PropertiesAsserts {
         }
     }
 
-    function assertApproxEqRel(int256 a, int256 b, uint256 maxPercentDelta, string memory err) internal virtual {
+    function assertApproxEqRel(
+        int256 a,
+        int256 b,
+        uint256 maxPercentDelta, // An 18 decimal fixed point number, where 1e18 == 100%
+        string memory err
+    ) internal virtual {
         if (b == 0) return assertEq(a, b, err); // If the left is 0, right must be too.
 
         uint256 percentDelta = stdMath.percentDelta(a, b);
@@ -361,7 +367,12 @@ abstract contract StdAsserts is PropertiesAsserts {
         }
     }
 
-    function assertApproxEqRelDecimal(int256 a, int256 b, uint256 maxPercentDelta, uint256 decimals) internal virtual {
+    function assertApproxEqRelDecimal(
+        int256 a,
+        int256 b,
+        uint256 maxPercentDelta, // An 18 decimal fixed point number, where 1e18 == 100%
+        uint256 decimals
+    ) internal virtual {
         if (b == 0) return assertEq(a, b); // If the left is 0, right must be too.
 
         uint256 percentDelta = stdMath.percentDelta(a, b);
@@ -376,10 +387,13 @@ abstract contract StdAsserts is PropertiesAsserts {
         }
     }
 
-    function assertApproxEqRelDecimal(int256 a, int256 b, uint256 maxPercentDelta, uint256 decimals, string memory err)
-        internal
-        virtual
-    {
+    function assertApproxEqRelDecimal(
+        int256 a,
+        int256 b,
+        uint256 maxPercentDelta, // An 18 decimal fixed point number, where 1e18 == 100%
+        uint256 decimals,
+        string memory err
+    ) internal virtual {
         if (b == 0) return assertEq(a, b, err); // If the left is 0, right must be too.
 
         uint256 percentDelta = stdMath.percentDelta(a, b);
@@ -437,6 +451,58 @@ abstract contract StdAsserts is PropertiesAsserts {
             emit log("Error: Calls were not equal");
             emit log_named_bytes("  Left call return data", returnDataA);
             emit log_named_bytes(" Right call revert data", returnDataB);
+            fail();
+        }
+    }
+
+    // StakeBake-specific assertions
+
+    /// @notice Asserts that a value increased by an expected amount
+    function assertIncreasedBy(uint256 before, uint256 after, uint256 expectedIncrease, string memory err) internal virtual {
+        uint256 actualIncrease = after - before;
+        if (actualIncrease != expectedIncrease) {
+            emit log_named_string("Error", err);
+            emit log_named_uint(" Before", before);
+            emit log_named_uint("  After", after);
+            emit log_named_uint(" Expected Increase", expectedIncrease);
+            emit log_named_uint(" Actual Increase", actualIncrease);
+            fail();
+        }
+    }
+
+    /// @notice Asserts that a value remained unchanged
+    function assertUnchanged(uint256 before, uint256 after, string memory err) internal virtual {
+        if (before != after) {
+            emit log_named_string("Error", err);
+            emit log_named_uint(" Before", before);
+            emit log_named_uint("  After", after);
+            fail();
+        }
+    }
+
+    /// @notice Asserts that an NFT ownership matches the expected owner
+    function assertNFTOwner(address nftContract, uint256 tokenId, address expectedOwner, string memory err) internal virtual {
+        (bool success, bytes memory data) = nftContract.call(
+            abi.encodeWithSelector(bytes4(keccak256("ownerOf(uint256)")), tokenId)
+        );
+        if (!success) {
+            emit log_named_string("Error", string(abi.encodePacked(err, ": Failed to fetch ownerOf")));
+            fail();
+        }
+        address owner = abi.decode(data, (address));
+        if (owner != expectedOwner) {
+            emit log_named_string("Error", err);
+            emit log_named_address(" Expected Owner", expectedOwner);
+            emit log_named_address(" Actual Owner", owner);
+            fail();
+        }
+    }
+
+    /// @notice Asserts that reward points are positive after staking
+    function assertPositiveRewardPoints(uint256 points, string memory err) internal virtual {
+        if (points <= 0) {
+            emit log_named_string("Error", err);
+            emit log_named_uint(" Reward Points", points);
             fail();
         }
     }

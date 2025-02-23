@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import {Invariants} from "./StakeBakeInvariants.t.sol";
+import {StakeBakeInvariants} from "./Invariants.t.sol";
 import {Setup} from "./Setup.t.sol";
 
 /// @title Tester

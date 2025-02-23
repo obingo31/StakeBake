@@ -1,137 +1,77 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.26;
 
 // Utils
-import {Actor} from "../utils/Actor.sol";
+import {Actor} from "./utils/Actor.sol";
 
 // Contracts
-import "../StakeBake.sol";
+import {StakeBake} from "src/StakeBake.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 // Test Contracts
-import {BaseTest} from "./BaseTest.t.sol";
+import {BaseTest} from "./base/BaseTest.t.sol";
 
 // Mock Contracts
-import {TestERC20} from "../utils/mocks/TestERC20.sol";
+import {TestERC20} from "./utils/mocks/TestERC20.sol";
 
 // Interfaces
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+// import {IStakeBake} from "src/interfaces/IStakeBake.sol";
 
 import "forge-std/console.sol";
 
-/// @notice Setup contract for the StakeBake invariant test suite, inherited by Tester
-/// @dev Deploys and configures the full StakeBake protocol for fuzzing
+/// @notice Setup contract for the invariant test Suite, inherited by Tester
 contract Setup is BaseTest {
-    // StakeBake protocol contracts
-    StakeBake internal stakeBake;
-
-    // Assets
-    TestERC20 internal rewardToken;
-    TestERC20[] internal stakingTokens; // staking tokens for each pool
-
-    // Configuration constants
-    uint256 constant STAKING_DURATION_IN_BLOCKS = 100000; // ~2 weeks at 13s/block
-    uint256 constant VESTING_DURATION = 10000; // ~2 days at 13s/block
-    uint256 constant INITIAL_TOKEN_BALANCE = 1e26; // 10^26 tokens for actors
-    uint256 constant NUMBER_OF_POOLS = 2; // Number of staking pools
-    uint256 constant DAO_FEE = 0.05e18; // 5% fee for penalty distribution
-    uint256 constant MAX_TOKEN_AMOUNT = 1e29; // Max token amount for fuzzing
-
-    // Actor addresses
-    address constant DAO_ADMIN = address(0x1111);
-    address constant USER1 = address(0x2222);
-    address constant USER2 = address(0x3333);
-    address constant USER3 = address(0x4444);
-
-    // Multisig configuration
-    address[] internal multiSigSigners;
-    uint256 internal multiSigRequiredSignatures = 2;
+    StakeBake public stakeBake;
+    IERC20 public rewardToken;
+    TestERC20 public stakingToken;
+    address public admin;
+    address[] public users;
+    uint256 public constant INIT_BALANCE = 1_000_000 ether;
+    uint256 public constant STAKE_AMOUNT = 1000 ether;
+    uint256 public constant REWARD_AMOUNT = 500_000 ether;
 
     function _setUp() internal {
-        // Deploy protocol contracts and actors
+        // Deploy protocol contracts and protocol actors
         _deployProtocolCore();
         _setUpActors();
     }
 
-    /// @notice Deploy StakeBake core protocol components
+    /// @notice Deploy protocol core contracts
     function _deployProtocolCore() internal {
-        // Deploy core protocol contracts
-        core_setUp(DAO_ADMIN);
-
-        // Deploy assets
-        _deployAssets();
-
-        // Create staking pools
-        _initPools();
-    }
-
-    /// @notice Deploy StakeBake core contracts
-    function core_setUp(address daoAdmin) internal {
-        // Deploy reward token
+        // Deploy reward and staking tokens
         rewardToken = new TestERC20("Reward Token", "RWD", 18);
+        stakingToken = new TestERC20("Staking Token", "STK", 18);
 
-        // Setup multisig signers
-        multiSigSigners = new address[](3);
-        multiSigSigners[0] = daoAdmin;
-        multiSigSigners[1] = USER1;
-        multiSigSigners[2] = USER2;
-
-        // Deploy StakeBake contract
+        // Deploy StakeBake
+        address[] memory multiSigSigners = new address[](1);
+        multiSigSigners[0] = admin;
         stakeBake = new StakeBake(
-            address(rewardToken),
-            STAKING_DURATION_IN_BLOCKS,
-            VESTING_DURATION,
-            daoAdmin, // Owner
+            address(rewardToken), 
+            100_000, // staking duration in blocks
+            50_000,  // vesting duration in blocks
+            admin,
             multiSigSigners,
-            multiSigRequiredSignatures
+            1
         );
 
-        // Fund StakeBake with reward tokens for distribution
-        rewardToken.mint(address(this), INITIAL_TOKEN_BALANCE * 10); // Extra for contract
-        rewardToken.approve(address(stakeBake), type(uint256).max);
-        rewardToken.transfer(address(stakeBake), INITIAL_TOKEN_BALANCE * 5); // 5x actor initial balance
-    }
-
-    /// @notice Deploy assets (staking tokens for pools)
-    function _deployAssets() internal {
-        for (uint256 i = 0; i < NUMBER_OF_POOLS; i++) {
-            TestERC20 stakingToken = new TestERC20(
-                string(abi.encodePacked("Stake Token ", uint8(i + 48))),
-                string(abi.encodePacked("STK", uint8(i + 48))),
-                18
-            );
-            stakingTokens.push(stakingToken);
-        }
-    }
-
-    /// @notice Initialize staking pools
-    function _initPools() internal {
-        for (uint256 i = 0; i < NUMBER_OF_POOLS; i++) {
-            stakeBake.createPool(
-                address(stakingTokens[i]),
-                1e18, // rewardRatePoints (1x multiplier)
-                1e12, // rewardRatePerSecond (1 trillion wei/sec)
-                50    // earlyWithdrawalPenalty (50%)
-            );
-        }
+        // Mint tokens and distribute them
+        rewardToken.mint(address(stakeBake), REWARD_AMOUNT);
+        stakingToken.mint(admin, INIT_BALANCE);
     }
 
     /// @notice Deploy protocol actors and initialize their balances
     function _setUpActors() internal {
-        // Initialize actor addresses
-        address[] memory addresses = new address[](4);
-        addresses[0] = DAO_ADMIN;
-        addresses[1] = USER1;
-        addresses[2] = USER2;
-        addresses[3] = USER3;
+        // Initialize the three actors of the fuzzers
+        address[] memory addresses = new address[](3);
+        addresses[0] = address(uint160(1)); // USER1
+        addresses[1] = address(uint160(2)); // USER2
+        addresses[2] = address(uint160(3)); // USER3
 
-        // Initialize tokens array (reward + staking tokens)
-        address[] memory tokens = new address[](stakingTokens.length + 1);
+        // Initialize the tokens array
+        address[] memory tokens = new address[](2);
         tokens[0] = address(rewardToken);
-        for (uint256 i = 0; i < stakingTokens.length; i++) {
-            tokens[i + 1] = address(stakingTokens[i]);
-        }
+        tokens[1] = address(stakingToken);
 
-        // Contracts to approve tokens to
         address[] memory contracts = new address[](1);
         contracts[0] = address(stakeBake);
 
@@ -140,11 +80,8 @@ contract Setup is BaseTest {
             address _actor = _setUpActor(addresses[i], tokens, contracts);
 
             // Mint initial balances to actors
-            for (uint256 j = 0; j < tokens.length; j++) {
-                TestERC20 _token = TestERC20(tokens[j]);
-                _token.mint(_actor, INITIAL_TOKEN_BALANCE);
-            }
-            actorAddresses.push(_actor);
+            stakingToken.mint(_actor, INIT_BALANCE);
+            users.push(_actor);
         }
     }
 
@@ -157,9 +94,66 @@ contract Setup is BaseTest {
         internal
         returns (address actorAddress)
     {
-        Actor _actor = new Actor(address(stakeBake), tokens, contracts);
-        actors[userAddress] = _actor;
-        vm.deal(address(_actor), INITIAL_TOKEN_BALANCE); // Provide ETH for gas
+        bool success;
+        Actor _actor = new Actor(tokens, contracts);
+        (success,) = address(_actor).call{value: INIT_BALANCE}("");
+        assert(success);
         actorAddress = address(_actor);
+    }
+
+    /// @notice Create a staking pool
+    function createPool() public {
+        stakeBake.createPool(
+            address(stakingToken), 
+            10, // Reward rate points
+            1,  // Reward rate per second
+            5   // Early withdrawal penalty
+        );
+    }
+
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+    //                                  INVARIANTS                                              //
+    ///////////////////////////////////////////////////////////////////////////////////////////////
+
+    function invariant_RewardFundCannotGoNegative() public view {
+        assert(stakeBake.totalRewardFund() >= 0);
+    }
+
+    function invariant_StakedAmountsMatchPoolTotal() public view {
+        uint256 totalStaked;
+        for (uint256 i = 0; i < users.length; i++) {
+            for (uint256 j = 0; j < stakeBake.poolCount(); j++) {
+                (uint72 tokenAmount,,,,) = stakeBake.userStakes(users[i], j);
+                totalStaked += tokenAmount;
+            }
+        }
+        uint256 expectedTotalStaked;
+        for (uint256 j = 0; j < stakeBake.poolCount(); j++) {
+            (,, uint256 poolTotalStaked,,,) = stakeBake.pools(j);
+            expectedTotalStaked += poolTotalStaked;
+        }
+        assertEq(totalStaked, expectedTotalStaked);
+    }
+
+    function invariant_RewardPointsMatchTotalPool() public view {
+        uint256 totalUserPoints;
+        for (uint256 i = 0; i < users.length; i++) {
+            for (uint256 j = 0; j < stakeBake.poolCount(); j++) {
+                totalUserPoints += stakeBake.userRewardPoints(users[i], j);
+            }
+        }
+        uint256 totalPoolPoints;
+        for (uint256 j = 0; j < stakeBake.poolCount(); j++) {
+            totalPoolPoints += stakeBake.poolTotalRewardPoints(j);
+        }
+        assertEq(totalUserPoints, totalPoolPoints);
+    }
+
+    function invariant_UserBalancesNeverExceedTotalSupply() public view {
+        uint256 totalTokenBalance;
+        for (uint256 i = 0; i < users.length; i++) {
+            totalTokenBalance += rewardToken.balanceOf(users[i]);
+        }
+        assertLe(totalTokenBalance, rewardToken.totalSupply());
     }
 }

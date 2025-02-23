@@ -1,26 +1,32 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
-/**
- * @title StakeBake
- * @notice Enhanced staking contract with advanced features
- * @dev This contract allows users to stake tokens, earn rewards based on locking periods, and claim continuous rewards.
- */
-contract StakeBake is ReentrancyGuard, Pausable {
+interface IRecipeNFT is IERC721 {
+    function getWeight(uint256 tokenId) external view returns (uint256);
+}
+
+contract StakeBake is ReentrancyGuard, Pausable, Ownable {
+    using ECDSA for bytes32;
+
+    // --- Structs ---
     struct Stake {
-        uint72 tokenAmount;
-        uint24 lockingPeriodInBlocks;
-        uint32 startBlock;
-        uint128 expectedStakingRewardPoints;
+        uint256 tokenId;
+        uint256 weight;
+        uint256 lockingPeriodInBlocks;
+        uint256 startBlock;
+        uint256 expectedStakingRewardPoints;
         bool claimed;
     }
 
     struct Pool {
-        IERC20 stakingToken;
+        IRecipeNFT recipeNFT;
         uint256 totalStaked;
         uint256 rewardRatePerSecond;
         uint256 rewardRatePoints;
@@ -32,103 +38,133 @@ contract StakeBake is ReentrancyGuard, Pausable {
     }
 
     struct Booster {
-        uint256 multiplier; // 1e18 = 1x
+        uint256 multiplier;
         uint256 endBlock;
     }
-
-    mapping(address => mapping(uint256 => Stake)) public userStakes;
-    mapping(address => mapping(uint256 => uint256)) public userRewardPoints;
-    mapping(address => mapping(uint256 => uint256)) public userRewardPerTokenPaid;
-    mapping(address => uint256) public continuousRewards;
-    mapping(uint256 => Pool) public pools;
-    mapping(uint256 => uint256) public poolTotalRewardPoints;
-    mapping(uint256 => Booster) public poolBoosters;
-
-    uint256 public poolCount;
-    uint256 public totalRewardFund;
-    IERC20 immutable public rewardToken;
-    mapping(address => uint256) public grantedTokens;
-    mapping(address => uint256) public releasedTokens;
-    uint256 immutable public vestingDuration;
-    uint256 immutable public stakingProgramEndsBlock;
-    address immutable public owner;
-
-    bool public emergencyStopped;
-    mapping(address => bool) public admins;
-    MultiSig public multiSig;
 
     struct MultiSig {
         address[] signers;
         uint256 requiredSignatures;
-        mapping(bytes32 => uint256) signatures;
+        mapping(bytes32 => mapping(address => bool)) signatures;
+        mapping(address => bool) isSigner;
     }
 
-    event PoolCreated(uint256 indexed poolId, address stakingToken, uint256 rewardRatePoints, uint256 rewardRatePerSecond);
-    event StakeLocked(address indexed user, uint256 indexed poolId, uint256 amount, uint256 lockingPeriod, uint256 points);
+    struct VestingSchedule {
+        uint256 totalAmount;
+        uint256 cliff;
+        uint256 duration;
+        uint256 start;
+    }
+
+    // --- State Variables ---
+    uint256 public immutable vestingDuration;
+    uint256 public immutable stakingProgramEndsBlock;
+    IERC20 public immutable rewardToken;
+
+    mapping(address => mapping(uint256 => mapping(uint256 => Stake))) public userStakes;
+    mapping(address => mapping(uint256 => uint256[])) public userStakedTokenIds;
+    mapping(address => mapping(uint256 => uint256)) public userRewardPoints;
+    mapping(bytes32 => uint256) public continuousRewards; // account => poolId => reward
+    mapping(address => mapping(uint256 => uint256)) public userRewardPerTokenPaid; // account => poolId => rewardPerTokenPaid
+    mapping(uint256 => Pool) public pools;
+    mapping(uint256 => uint256) public poolTotalRewardPoints;
+    mapping(uint256 => Booster) public poolBoosters;
+    uint256 public poolCount;
+    uint256 public totalRewardFund;
+    mapping(address => uint256) public grantedTokens;
+    mapping(address => uint256) public releasedTokens;
+    mapping(address => VestingSchedule) public vestingSchedules;
+
+    bool public isEmergencyStopped;
+    MultiSig public multiSig;
+
+    // --- Events ---
+    event PoolCreated(uint256 indexed poolId, address recipeNFT, uint256 rewardRatePoints, uint256 rewardRatePerSecond);
+    event StakeLocked(address indexed user, uint256 indexed poolId, uint256 tokenId, uint256 lockingPeriod, uint256 points);
     event StakePeriodAdjusted(address indexed user, uint256 indexed poolId, uint256 newPeriod);
     event BoosterActivated(uint256 indexed poolId, uint256 multiplier, uint256 endBlock);
-    event CompoundRewards(address indexed user, uint256 amount);
     event RewardClaimed(address indexed user, uint256 indexed poolId, uint256 continuousReward, uint256 lockedReward);
     event EmergencyStop(bool stopped);
     event RewardFundAdded(uint256 amount);
     event RewardReleased(address indexed user, uint256 amount);
-    event StakeUnlockedPrematurely(address indexed user, uint256 amount, uint256 lockingPeriod, uint256 blockNumber);
-    event StakeUnlocked(address indexed user, uint256 amount, uint256 lockingPeriod, uint256 rewardPoints);
+    event StakeUnlockedPrematurely(address indexed user, uint256 tokenId, uint256 poolId, uint256 penaltyApplied);
+    event StakeUnlocked(address indexed user, uint256 tokenId, uint256 poolId, uint256 rewardPoints);
+    event VestingScheduleCreated(address indexed user, uint256 totalAmount, uint256 cliff, uint256 duration);
+    event TokensGranted(address indexed user, uint256 amount);
 
+    // --- Constructor ---
     constructor(
         address rewardToken_,
         uint256 stakingDurationInBlocks_,
         uint256 vestingDuration_,
-        address owner_,
         address[] memory multiSigSigners_,
         uint256 multiSigRequiredSignatures_
     ) {
-        require(owner_ != address(0), "Owner address cannot be zero");
         require(rewardToken_ != address(0), "Reward token address cannot be zero");
+        require(multiSigRequiredSignatures_ > 0, "Required signatures must be greater than zero");
         require(multiSigSigners_.length >= multiSigRequiredSignatures_, "Invalid multi-signature configuration");
 
-        owner = owner_;
-        admins[owner_] = true;
         rewardToken = IERC20(rewardToken_);
         stakingProgramEndsBlock = block.number + stakingDurationInBlocks_;
         vestingDuration = vestingDuration_;
+
         multiSig.signers = multiSigSigners_;
         multiSig.requiredSignatures = multiSigRequiredSignatures_;
+        for (uint256 i = 0; i < multiSigSigners_.length; i++) {
+            multiSig.isSigner[multiSigSigners_[i]] = true;
+        }
     }
 
-    modifier onlyOwnerOrAdmin() {
-        require(msg.sender == owner || admins[msg.sender], "Not authorized: Only owner or admin can call this function");
-        _;
-    }
-
+    // --- Modifiers ---
     modifier onlyMultiSig() {
-        require(isMultiSigSigner(msg.sender), "Not authorized: Only multi-signature signers can call this function");
+        require(multiSig.isSigner[msg.sender], "Not a multi-signature signer");
         _;
     }
 
     modifier updateContinuousReward(address account_, uint256 poolId_) {
         Pool storage pool = pools[poolId_];
-        pool.rewardPerTokenStored = rewardPerToken(poolId_);
-        pool.updatedAt = lastTimeRewardApplicable(poolId_);
+        uint256 currentRewardPerToken = rewardPerToken(poolId_);
+        uint256 currentLastTimeRewardApplicable = lastTimeRewardApplicable(poolId_);
+        uint256 currentEarnedContinuous;
+
         if (account_ != address(0)) {
-            continuousRewards[account_] += earnedContinuous(account_, poolId_);
-            userRewardPerTokenPaid[account_][poolId_] = pool.rewardPerTokenStored;
+            currentEarnedContinuous = earnedContinuous(account_, poolId_);
         }
+
         _;
+
+        pool.rewardPerTokenStored = currentRewardPerToken;
+        pool.updatedAt = currentLastTimeRewardApplicable;
+
+        if (account_ != address(0)) {
+            bytes32 userPoolKey = getUserPoolKey(account_, poolId_);
+            continuousRewards[userPoolKey] = currentEarnedContinuous;
+            userRewardPerTokenPaid[account_][poolId_] = currentRewardPerToken;
+        }
     }
 
-    // Enhanced Pool Management
+    // --- Helper Functions ---
+    function getUserPoolKey(address user, uint256 poolId) public pure returns (bytes32) {
+        return keccak256(abi.encodePacked(user, poolId));
+    }
+
+    function lastTimeRewardApplicable(uint256 poolId_) public view returns (uint256) {
+        Pool memory pool = pools[poolId_];
+        return block.number < stakingProgramEndsBlock ? block.number : stakingProgramEndsBlock;
+    }
+
+    // --- Pool Management ---
     function createPool(
-        address stakingToken_, 
-        uint256 rewardRatePoints_, 
+        address recipeNFT_,
+        uint256 rewardRatePoints_,
         uint256 rewardRatePerSecond_,
         uint256 earlyWithdrawalPenalty_
-    ) external onlyOwnerOrAdmin whenNotPaused {
-        require(stakingToken_ != address(0), "Invalid staking token address");
+    ) external onlyOwner whenNotPaused onlyMultiSig {
+        require(recipeNFT_ != address(0), "Invalid recipe NFT address");
         require(earlyWithdrawalPenalty_ <= 100, "Early withdrawal penalty must be <= 100");
 
         pools[poolCount] = Pool(
-            IERC20(stakingToken_),
+            IRecipeNFT(recipeNFT_),
             0,
             rewardRatePerSecond_,
             rewardRatePoints_,
@@ -138,224 +174,261 @@ contract StakeBake is ReentrancyGuard, Pausable {
             true,
             earlyWithdrawalPenalty_
         );
-        emit PoolCreated(poolCount, stakingToken_, rewardRatePoints_, rewardRatePerSecond_);
+        emit PoolCreated(poolCount, recipeNFT_, rewardRatePoints_, rewardRatePerSecond_);
         poolCount++;
     }
 
-    function activateBooster(uint256 poolId_, uint256 multiplier_, uint256 durationInBlocks_) 
-        external onlyOwnerOrAdmin {
-        require(poolId_ < poolCount, "Invalid pool ID");
-        poolBoosters[poolId_] = Booster(multiplier_, block.number + durationInBlocks_);
-        emit BoosterActivated(poolId_, multiplier_, block.number + durationInBlocks_);
-    }
-
-    // Staking Functions
-    function lockTokens(uint256 poolId_, uint72 tokenAmount_, uint24 lockingPeriodInBlocks_)
-        external whenNotPaused nonReentrant updateContinuousReward(msg.sender, poolId_) {
-        require(!emergencyStopped, "Emergency stop is active");
+    function lockTokens(uint256 poolId_, uint256 tokenId_, uint256 lockingPeriodInBlocks_)
+        external
+        whenNotPaused
+        nonReentrant
+        updateContinuousReward(msg.sender, poolId_)
+    {
+        require(!isEmergencyStopped, "Emergency stop is active");
         require(poolId_ < poolCount, "Invalid pool ID");
         require(pools[poolId_].active, "Pool is not active");
-        require(block.number <= stakingProgramEndsBlock - lockingPeriodInBlocks_, "Locking period exceeds staking program duration");
-        require(userStakes[msg.sender][poolId_].tokenAmount == 0, "User already has an active stake in this pool");
-
-        Pool storage pool = pools[poolId_];
-        uint128 rewardPoints = calculateRewardPoints(tokenAmount_, lockingPeriodInBlocks_, pool.rewardRatePoints, poolId_);
-
-        userStakes[msg.sender][poolId_] = Stake(tokenAmount_, lockingPeriodInBlocks_, uint32(block.number), rewardPoints, false);
-        pool.totalStaked += tokenAmount_;
-        poolTotalRewardPoints[poolId_] += rewardPoints;
-        userRewardPoints[msg.sender][poolId_] += rewardPoints;
-
-        require(pool.stakingToken.transferFrom(msg.sender, address(this), tokenAmount_), "Transfer failed: Insufficient balance or allowance");
-        emit StakeLocked(msg.sender, poolId_, tokenAmount_, lockingPeriodInBlocks_, rewardPoints);
-    }
-
-    function adjustLockingPeriod(uint256 poolId_, uint24 newLockingPeriod_) 
-        external nonReentrant updateContinuousReward(msg.sender, poolId_) {
-        Stake storage stake = userStakes[msg.sender][poolId_];
-        require(stake.tokenAmount > 0, "No active stake found");
-        require(!stake.claimed, "Stake already claimed");
-        require(block.number <= stakingProgramEndsBlock - newLockingPeriod_, "New locking period exceeds staking program duration");
-
-        uint128 newPoints = calculateRewardPoints(
-            stake.tokenAmount,
-            newLockingPeriod_,
-            pools[poolId_].rewardRatePoints,
-            poolId_
+        require(
+            block.number + lockingPeriodInBlocks_ <= stakingProgramEndsBlock,
+            "Locking period exceeds staking program duration"
         );
-
-        poolTotalRewardPoints[poolId_] = poolTotalRewardPoints[poolId_] - stake.expectedStakingRewardPoints + newPoints;
-        userRewardPoints[msg.sender][poolId_] = userRewardPoints[msg.sender][poolId_] - stake.expectedStakingRewardPoints + newPoints;
-        stake.lockingPeriodInBlocks = newLockingPeriod_;
-        stake.expectedStakingRewardPoints = newPoints;
-
-        emit StakePeriodAdjusted(msg.sender, poolId_, newLockingPeriod_);
-    }
-
-    function unlockTokens(uint256 poolId_) 
-        external nonReentrant updateContinuousReward(msg.sender, poolId_) {
-        Stake storage stake = userStakes[msg.sender][poolId_];
-        require(stake.tokenAmount > 0, "No active stake found");
-        require(!stake.claimed, "Stake already claimed");
+        require(userStakes[msg.sender][poolId_][tokenId_].tokenId == 0, "Token is already staked");
+        require(lockingPeriodInBlocks_ > 0, "Locking period must be greater than zero");
 
         Pool storage pool = pools[poolId_];
-        uint256 returnAmount = stake.tokenAmount;
-        
-        if (block.number < stake.startBlock + stake.lockingPeriodInBlocks) {
-            uint256 penalty = (stake.tokenAmount * pool.earlyWithdrawalPenalty) / 100;
-            returnAmount -= penalty;
-            totalRewardFund += penalty; // Penalty goes to reward pool
-        }
-        _processEarlyUnlock(msg.sender, poolId_, stake);
+        uint256 weight = pool.recipeNFT.getWeight(tokenId_);
+        uint256 rewardPoints = calculateRewardPoints(weight, lockingPeriodInBlocks_, pool.rewardRatePoints, poolId_);
 
-        pool.totalStaked -= stake.tokenAmount;
-        stake.claimed = true;
-        require(pool.stakingToken.transfer(msg.sender, returnAmount), "Transfer failed: Insufficient contract balance");
+        userStakes[msg.sender][poolId_][tokenId_] = Stake(
+            tokenId_,
+            weight,
+            lockingPeriodInBlocks_,
+            block.number,
+            rewardPoints,
+            false
+        );
+        userStakedTokenIds[msg.sender][poolId_].push(tokenId_);
+        pool.totalStaked += weight;
+        userRewardPoints[msg.sender][poolId_] += rewardPoints;
+        poolTotalRewardPoints[poolId_] += rewardPoints;
+
+        IERC721(address(pool.recipeNFT)).transferFrom(msg.sender, address(this), tokenId_);
+        emit StakeLocked(msg.sender, poolId_, tokenId_, lockingPeriodInBlocks_, rewardPoints);
     }
 
-    // Reward Calculations
-    function calculateRewardPoints(uint72 amount_, uint24 period_, uint256 rate_, uint256 poolId_) 
-        private view returns (uint128) {
-        uint256 booster = poolBoosters[poolId_].endBlock > block.number ? 
-            poolBoosters[poolId_].multiplier : 1e18;
-        return uint128((uint256(amount_) * period_ * rate_ * booster) / 1e18);
+    // --- Rewards ---
+    function calculateRewardPoints(uint256 weight_, uint256 period_, uint256 rate_, uint256 poolId_)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 booster = poolBoosters[poolId_].endBlock > block.number ? poolBoosters[poolId_].multiplier : 1e18;
+        return (weight_ * period_ * rate_ * booster) / 1e18;
     }
 
     function rewardPerToken(uint256 poolId_) public view returns (uint256) {
         Pool memory pool = pools[poolId_];
         if (pool.totalStaked == 0) return pool.rewardPerTokenStored;
-        return pool.rewardPerTokenStored + 
-            (pool.rewardRatePerSecond * (lastTimeRewardApplicable(poolId_) - pool.updatedAt) * 1e18) / 
-            pool.totalStaked;
+        return
+            pool.rewardPerTokenStored +
+            ((pool.rewardRatePerSecond * (lastTimeRewardApplicable(poolId_) - pool.updatedAt) * 1e18) /
+                pool.totalStaked);
     }
 
     function earnedContinuous(address account_, uint256 poolId_) public view returns (uint256) {
-        return ((userStakes[account_][poolId_].tokenAmount * 
-            (rewardPerToken(poolId_) - userRewardPerTokenPaid[account_][poolId_])) / 1e18) + 
-            continuousRewards[account_];
+        bytes32 userPoolKey = getUserPoolKey(account_, poolId_);
+        Pool memory pool = pools[poolId_];
+        uint256 reward = 0;
+        uint256 stakedTokenCount = userStakedTokenIds[account_][poolId_].length;
+        uint256 cachedRewardPerToken = rewardPerToken(poolId_);
+        for (uint256 i = 0; i < stakedTokenCount; i++) {
+            uint256 tokenId = userStakedTokenIds[account_][poolId_][i];
+            Stake storage stake = userStakes[account_][poolId_][tokenId];
+            reward += ((stake.weight * (cachedRewardPerToken - userRewardPerTokenPaid[account_][poolId_])) / 1e18);
+        }
+        return reward + continuousRewards[userPoolKey];
     }
 
-    // Reward Management
-    function claimRewards(uint256[] calldata poolIds_) 
-        external nonReentrant {
-        uint256 totalContinuous = 0;
-        uint256 totalLocked = 0;
+    function claimRewards(uint256 poolId_) external nonReentrant updateContinuousReward(msg.sender, poolId_) {
+        require(!isEmergencyStopped, "Emergency stop is active");
+        require(poolId_ < poolCount, "Invalid pool ID");
+        require(pools[poolId_].active, "Pool is not active");
 
-        for (uint256 i = 0; i < poolIds_.length; i++) {
-            uint256 poolId = poolIds_[i];
-            require(poolId < poolCount, "Invalid pool ID");
-            _updateContinuousReward(msg.sender, poolId);
-            
-            Stake memory stake = userStakes[msg.sender][poolId];
-            totalContinuous += continuousRewards[msg.sender];
-            continuousRewards[msg.sender] = 0;
+        bytes32 userPoolKey = getUserPoolKey(msg.sender, poolId_);
+        uint256 continuousReward = continuousRewards[userPoolKey];
+        uint256 lockedReward = 0;
 
-            if (block.number > stakingProgramEndsBlock && stake.claimed && userRewardPoints[msg.sender][poolId] > 0) {
-                uint256 lockedReward = (totalRewardFund * userRewardPoints[msg.sender][poolId]) / 
-                    poolTotalRewardPoints[poolId];
-                userRewardPoints[msg.sender][poolId] = 0;
-                totalLocked += lockedReward;
-                _grantTokens(msg.sender, lockedReward);
+        uint256 stakedTokenCount = userStakedTokenIds[msg.sender][poolId_].length;
+        for (uint256 i = 0; i < stakedTokenCount; i++) {
+            uint256 tokenId = userStakedTokenIds[msg.sender][poolId_][i];
+            Stake storage stake = userStakes[msg.sender][poolId_][tokenId];
+            if (!stake.claimed && block.number >= stake.startBlock + stake.lockingPeriodInBlocks) {
+                lockedReward += stake.expectedStakingRewardPoints;
+                stake.claimed = true;
             }
-            emit RewardClaimed(msg.sender, poolId, totalContinuous, totalLocked);
         }
 
-        if (totalContinuous > 0) {
-            require(rewardToken.transfer(msg.sender, totalContinuous), "Transfer failed: Insufficient contract balance");
-        }
+        uint256 totalReward = continuousReward + lockedReward;
+        require(totalReward > 0, "No rewards to claim");
+        require(totalRewardFund >= totalReward, "Insufficient reward fund");
+
+        continuousRewards[userPoolKey] = 0;
+        userRewardPoints[msg.sender][poolId_] -= lockedReward;
+        totalRewardFund -= totalReward;
+
+        require(rewardToken.transfer(msg.sender, totalReward), "Reward transfer failed");
+
+        emit RewardClaimed(msg.sender, poolId_, continuousReward, lockedReward);
     }
 
-    function compoundRewards(uint256[] calldata poolIds_) 
-        external nonReentrant updateContinuousReward(msg.sender, poolIds_[0]) {
-        uint256 totalContinuous = continuousRewards[msg.sender];
-        require(totalContinuous > 0, "No rewards to compound");
+    function unlockTokens(uint256 poolId_, uint256 tokenId_) external nonReentrant updateContinuousReward(msg.sender, poolId_) {
+        require(!isEmergencyStopped, "Emergency stop is active");
+        require(poolId_ < poolCount, "Invalid pool ID");
+        require(pools[poolId_].active, "Pool is not active");
 
-        continuousRewards[msg.sender] = 0;
-        Pool storage pool = pools[poolIds_[0]];
-        uint72 amount = uint72(totalContinuous);
-        
-        uint128 rewardPoints = calculateRewardPoints(amount, userStakes[msg.sender][poolIds_[0]].lockingPeriodInBlocks, 
-            pool.rewardRatePoints, poolIds_[0]);
-        
-        userStakes[msg.sender][poolIds_[0]].tokenAmount += amount;
-        pool.totalStaked += amount;
-        poolTotalRewardPoints[poolIds_[0]] += rewardPoints;
-        userRewardPoints[msg.sender][poolIds_[0]] += rewardPoints;
+        Stake storage stake = userStakes[msg.sender][poolId_][tokenId_];
+        require(stake.tokenId == tokenId_, "Token not staked by user");
 
-        require(rewardToken.approve(address(this), totalContinuous), "Approve failed");
-        require(rewardToken.transferFrom(address(this), address(this), totalContinuous), "Transfer failed");
-        emit CompoundRewards(msg.sender, totalContinuous);
-    }
-
-    // Helper functions
-    function _updateContinuousReward(address account_, uint256 poolId_) private {
         Pool storage pool = pools[poolId_];
-        pool.rewardPerTokenStored = rewardPerToken(poolId_);
-        pool.updatedAt = lastTimeRewardApplicable(poolId_);
-        continuousRewards[account_] += earnedContinuous(account_, poolId_);
-        userRewardPerTokenPaid[account_][poolId_] = pool.rewardPerTokenStored;
-    }
+        bool isMature = block.number >= stake.startBlock + stake.lockingPeriodInBlocks;
+        uint256 rewardPoints = 0;
 
-    function lastTimeRewardApplicable(uint256 poolId_) public view returns (uint256) {
-        return pools[poolId_].finishAt < block.timestamp ? pools[poolId_].finishAt : block.timestamp;
-    }
-
-
-///@notice Grant tokens to a user
-///@param account_ The address of the user
-///@param amount_ The amount of tokens to grant
-    function _grantTokens(address account_, uint256 amount_) private {
-        grantedTokens[account_] += amount_;
-    }
-
-///@notice Release vested tokens to the user
-///@dev This function releases the vested tokens to the user based on the vesting schedule
-    function release() external nonReentrant {
-        uint256 releasable = _releasableAmount(msg.sender);
-        require(releasable > 0, "No tokens to release");
-
-        releasedTokens[msg.sender] += releasable;
-        require(rewardToken.transfer(msg.sender, releasable), "Transfer failed: Insufficient contract balance");
-        emit RewardReleased(msg.sender, releasable);
-    }
-
-    function _releasableAmount(address account) private view returns (uint256) {
-        return _vestedAmount(account) - releasedTokens[account];
-    }
-
-    function _vestedAmount(address account) private view returns (uint256) {
-        uint256 totalGranted = grantedTokens[account];
-        if (block.number >= stakingProgramEndsBlock + vestingDuration) {
-            return totalGranted;
-        } else {
-            return (totalGranted * (block.number - stakingProgramEndsBlock)) / vestingDuration;
-        }
-    }
-
-    function _processEarlyUnlock(address account, uint256 /*poolId*/, Stake storage stake) private {
-        emit StakeUnlockedPrematurely(account, stake.tokenAmount, stake.lockingPeriodInBlocks, block.number);
-    }
-
-    function isMultiSigSigner(address account) public view returns (bool) {
-        for (uint256 i = 0; i < multiSig.signers.length; i++) {
-            if (multiSig.signers[i] == account) {
-                return true;
+        // Remove token from userStakedTokenIds
+        uint256[] storage tokenIds = userStakedTokenIds[msg.sender][poolId_];
+        for (uint256 i = 0; i < tokenIds.length; i++) {
+            if (tokenIds[i] == tokenId_) {
+                tokenIds[i] = tokenIds[tokenIds.length - 1];
+                tokenIds.pop();
+                break;
             }
         }
-        return false;
+
+        pool.totalStaked -= stake.weight;
+
+        if (isMature && !stake.claimed) {
+            // Full reward if mature and not claimed
+            rewardPoints = stake.expectedStakingRewardPoints;
+            userRewardPoints[msg.sender][poolId_] -= rewardPoints;
+            poolTotalRewardPoints[poolId_] -= rewardPoints;
+            totalRewardFund -= rewardPoints;
+            require(rewardToken.transfer(msg.sender, rewardPoints), "Reward transfer failed");
+            emit StakeUnlocked(msg.sender, tokenId_, poolId_, rewardPoints);
+        } else if (!isMature) {
+            // Apply penalty for early withdrawal
+            uint256 penalty = (stake.expectedStakingRewardPoints * pool.earlyWithdrawalPenalty) / 100;
+            rewardPoints = stake.expectedStakingRewardPoints - penalty;
+            userRewardPoints[msg.sender][poolId_] -= stake.expectedStakingRewardPoints;
+            poolTotalRewardPoints[poolId_] -= stake.expectedStakingRewardPoints;
+            totalRewardFund -= rewardPoints;
+            require(rewardToken.transfer(msg.sender, rewardPoints), "Reward transfer failed");
+            emit StakeUnlockedPrematurely(msg.sender, tokenId_, poolId_, penalty);
+        } else {
+            // No rewards if already claimed
+            emit StakeUnlocked(msg.sender, tokenId_, poolId_, 0);
+        }
+
+        // Return NFT
+        IERC721(address(pool.recipeNFT)).transferFrom(address(this), msg.sender, tokenId_);
+        delete userStakes[msg.sender][poolId_][tokenId_];
     }
 
-    function addMultiSigSignature(bytes32 txHash) external onlyMultiSig {
-        multiSig.signatures[txHash]++;
+    // --- Emergency Stop ---
+    function emergencyStop() external onlyOwner onlyMultiSig {
+        isEmergencyStopped = !isEmergencyStopped;
+        emit EmergencyStop(isEmergencyStopped);
     }
 
-    function executeMultiSigTransaction(bytes32 txHash, address to, uint256 value, bytes calldata data) external onlyMultiSig {
-        require(multiSig.signatures[txHash] >= multiSig.requiredSignatures, "Not enough signatures");
-        (bool success, ) = to.call{value: value}(data);
-        require(success, "Transaction failed");
+    // --- Vesting ---
+    function createVestingSchedule(
+        address user_,
+        uint256 totalAmount_,
+        uint256 cliffInBlocks_,
+        uint256 durationInBlocks_
+    ) external onlyOwner onlyMultiSig {
+        require(user_ != address(0), "Invalid user address");
+        require(totalAmount_ > 0, "Total amount must be greater than zero");
+        require(durationInBlocks_ > 0, "Duration must be greater than zero");
+
+        vestingSchedules[user_] = VestingSchedule(
+            totalAmount_,
+            block.number + cliffInBlocks_,
+            durationInBlocks_,
+            block.number
+        );
+
+        emit VestingScheduleCreated(user_, totalAmount_, cliffInBlocks_, durationInBlocks_);
     }
 
-    function getPoolInfo(uint256 poolId_) external view returns (Pool memory, Booster memory) {
-        return (pools[poolId_], poolBoosters[poolId_]);
+    // --- Multi-Sig Functions ---
+    function submitSignature(bytes32 hash, bytes memory signature) external {
+        require(multiSig.isSigner[msg.sender], "Not a multi-signature signer");
+        require(!multiSig.signatures[hash][msg.sender], "Signer has already submitted signature");
+
+        address signer = hash.recover(signature);
+        require(multiSig.isSigner[signer], "Invalid signer");
+        multiSig.signatures[hash][msg.sender] = true;
+    }
+
+    function executeCreatePool(
+        address _recipeNFT,
+        uint256 _rewardRatePoints,
+        uint256 _rewardRatePerSecond,
+        uint256 _earlyWithdrawalPenalty,
+        bytes32 hash
+    ) external onlyOwner {
+        require(isEnoughSignatures(hash), "Not enough signatures");
+        require(pools[poolCount].recipeNFT == IRecipeNFT(address(0)), "Pool already created");
+        deleteSignature(hash);
+
+        pools[poolCount] = Pool(
+            IRecipeNFT(_recipeNFT),
+            0,
+            _rewardRatePerSecond,
+            _rewardRatePoints,
+            0,
+            block.timestamp,
+            0,
+            true,
+            _earlyWithdrawalPenalty
+        );
+        emit PoolCreated(poolCount, _recipeNFT, _rewardRatePoints, _rewardRatePerSecond);
+        poolCount++;
+    }
+
+    function isEnoughSignatures(bytes32 hash) public view returns (bool) {
+        uint256 signatureCount = 0;
+        for (uint256 i = 0; i < multiSig.signers.length; i++) {
+            if (multiSig.signatures[hash][multiSig.signers[i]]) {
+                signatureCount++;
+            }
+        }
+        return signatureCount >= multiSig.requiredSignatures;
+    }
+
+    function deleteSignature(bytes32 hash) internal {
+        for (uint256 i = 0; i < multiSig.signers.length; i++) {
+            delete multiSig.signatures[hash][multiSig.signers[i]];
+        }
+    }
+
+    // --- Reward Fund Management ---
+    function addRewardFund(uint256 amount) external onlyOwner onlyMultiSig {
+        require(amount > 0, "Amount must be greater than zero");
+        rewardToken.transferFrom(msg.sender, address(this), amount);
+        totalRewardFund += amount;
+        emit RewardFundAdded(amount);
+    }
+
+    function grantTokens(address user_, uint256 amount_) external onlyOwner onlyMultiSig {
+        require(user_ != address(0), "Invalid user address");
+        grantedTokens[user_] += amount_;
+        emit TokensGranted(user_, amount_);
+    }
+
+    function releaseGrantedTokens(address user_, uint256 amount_) external onlyOwner onlyMultiSig {
+        require(grantedTokens[user_] >= amount_, "Cannot release more than granted");
+        grantedTokens[user_] -= amount_;
+        releasedTokens[user_] += amount_;
+        rewardToken.transfer(user_, amount_);
+        emit RewardReleased(user_, amount_);
     }
 }

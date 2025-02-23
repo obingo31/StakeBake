@@ -6,7 +6,7 @@ import "forge-std/Test.sol";
 import "forge-std/console.sol";
 
 // Contracts
-import {Invariants} from "./StakeBakeInvariants.t.sol";
+import {StakeBakeInvariants} from "./Invariants.t.sol";
 import {Setup} from "./Setup.t.sol";
 import {StakeBake} from "src/StakeBake.sol";
 
