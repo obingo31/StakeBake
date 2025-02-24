@@ -46,11 +46,10 @@ StakeBakeTest::emergencyStop
 ```    
 This tests the protocol’s emergency stop mechanism, ensuring it restricts operations when activated and allows them when inactive.
 
-Scenario 4: Reentrancy Protection
+Reentrancy Protection
 File: BTT/StakeBakeReentrancy.tree
 
 ```js
-Copy
 StakeBakeTest::unlockTokens
 ├── It should prevent reentrancy during unstaking.
 └── It should prevent reentrancy during reward claiming.
@@ -93,13 +92,10 @@ bulloak scaffold BTT/StakeBakeEdgeCases.tree
 ```
 This will generate files like StakeBakeBasic.t.sol, StakeBakeRewards.t.sol, and so on, each containing test functions corresponding to the scenarios defined in the .tree files.
 
-Step 4: Next Steps
-To complete the process:
-
-Implement the Tests: Open the generated .t.sol files and add the necessary Solidity code to test StakeBake’s behavior. For example:
 In StakeBakeBasic.t.sol, implement test_ItShouldAllowStakingAnNFT by minting an NFT, approving it, and calling lockTokens.
 In StakeBakeRewards.t.sol, implement test_ItShouldAllowClaimingRewards by staking an NFT, advancing the block number, and calling claimRewards.
-Verify Consistency: After implementation, run Bulloak’s check command to ensure the tests match the .tree specifications:
+Verify Consistency: 
+Run Bulloak’s check command to ensure the tests match the .tree specifications:
 ```bash
 bulloak check BTT/StakeBakeBasic.tree
 bulloak check BTT/StakeBakeRewards.tree
