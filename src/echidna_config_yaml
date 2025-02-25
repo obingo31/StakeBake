@@ -1,0 +1,15 @@
+codeSize: 224576
+balanceAddr: 0xffffffffffffffffffffffff
+balanceContract: 0xffffffffffffffffffffffffffffffffffffffffffffffff
+testLimit: 20000000
+seqLen: 300
+shrinkLimit: 2500
+propMaxGas: 1000000000
+testMaxGas: 1000000000
+coverage: true
+coverageFormats: ["lcov", "html"]
+corpusDir: "test/invariants/_corpus/echidna/default/_data/corpus"
+maxValue: 100000000000000000000000
+quiet: true
+workers: 10
+cryticArgs: ["--solc-solcs-select", "0.8.28", "--solc-remaps", "@openzeppelin/=node_modules/@openzeppelin/"]

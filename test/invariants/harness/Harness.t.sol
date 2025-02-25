@@ -154,4 +154,6 @@ contract StakeBakeActionsHarness_Test is Test, StakeBakePropertiesAsserts {
         vm.expectRevert("Emergency stop is active");
         stakeBake.lockTokens(poolId, 10, 100);
     }
+
+    
 }

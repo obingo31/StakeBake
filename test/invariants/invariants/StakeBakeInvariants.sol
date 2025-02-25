@@ -13,7 +13,7 @@ import {StakeBakeConfigHandler} from "./StakeBakeConfigHandler.t.sol";
 import {StakeBakeActor} from "../utils/StakeBakeActor.sol";
 import {TestERC20} from "../utils/mocks/TestERC20.sol";
 import {TestERC721} from "../utils/mocks/TestERC721.sol";
-import {StakeBake} from "./StakeBake.sol"; // Only for setup
+import {StakeBake} from "./StakeBake.sol"; 
 
 contract StakeBakeInvariantTest is StakeBakeBaseTest, StakeBakeStdAsserts {
     StakeBakeProtocolAssertions assertions;

@@ -181,6 +181,13 @@ abstract contract StakeBakeBeforeAfterHooks is BaseHooks {
         }
     }
 
+    ///  Check STAKING_GPOST_D for recent transfers
+
+    function _checkPostConditions() internal {
+    assert_STAKING_GPOST_D(address(this), 1, address(stakeBake)); // Adjust tokenId as needed
+    }
+    
+
     ///////////////////////////////////////////////////////////////////////////////////////////////
     //                                          STAKING                                          //
     ///////////////////////////////////////////////////////////////////////////////////////////////
